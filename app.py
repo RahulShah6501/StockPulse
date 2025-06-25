@@ -22,14 +22,14 @@ Use this interactive dashboard to analyze, compare, and forecast stock market tr
 st.sidebar.header("🔧 Configuration")
 
 # Popular stock suggestions
-popular_stocks = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "META", "NFLX", "NVDA", "JPM", "V"]
+# Removed popular_stocks list
 
 use_live_data = st.sidebar.checkbox("Use live data from Yahoo Finance", value=True)
 
 if use_live_data:
     symbol_input = st.sidebar.text_input(
         "Enter stock symbols (comma-separated)", 
-        value=", ".join(popular_stocks),
+        value="",
         help="Start with a few known stocks (e.g., AAPL, GOOGL)"
     )
     if symbol_input:
