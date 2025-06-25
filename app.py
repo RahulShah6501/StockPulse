@@ -12,14 +12,14 @@ from nltk.sentiment.vader import SentimentIntensityAnalyzer
 import nltk
 nltk.download('vader_lexicon')
 
-st.set_page_config(page_title="\ud83d\udcc8 Stock Market Dashboard", layout="wide")
+st.set_page_config(page_title="📈 Stock Market Dashboard", layout="wide")
 
 st.markdown("""
-# \ud83d\udcc8 Advanced Stock Market Dashboard
+# 📈 Advanced Stock Market Dashboard
 Use this interactive dashboard to analyze, compare, and forecast stock market trends.
 """)
 
-st.sidebar.header("\ud83d\udd27 Configuration")
+st.sidebar.header("🔧 Configuration")
 
 # Popular stock suggestions
 popular_stocks = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "META", "NFLX", "NVDA", "JPM", "V"]
@@ -70,7 +70,7 @@ df.sort_values(['Index','Date'], inplace=True)
 # Multiselect for symbols with no default selected
 if df['Index'].nunique() > 1:
     all_symbols = sorted(df['Index'].unique())
-    st.subheader("\ud83d\udcc8 Select Stocks to Compare")
+    st.subheader("📈 Select Stocks to Compare")
     selected_symbols = st.multiselect(
         "Start typing stock symbols to search and select:",
         options=all_symbols,
