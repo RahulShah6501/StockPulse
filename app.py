@@ -1,6 +1,3 @@
-# enhanced_stock_dashboard.py (refined layout and style improvements)
-
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -15,21 +12,28 @@ from nltk.sentiment.vader import SentimentIntensityAnalyzer
 import nltk
 nltk.download('vader_lexicon')
 
-st.set_page_config(page_title="📊 Stock Market Dashboard", layout="wide")
+st.set_page_config(page_title="\ud83d\udcc8 Stock Market Dashboard", layout="wide")
 
 st.markdown("""
-# 📈 Advanced Stock Market Dashboard
+# \ud83d\udcc8 Advanced Stock Market Dashboard
 Use this interactive dashboard to analyze, compare, and forecast stock market trends.
 """)
 
-st.sidebar.header("🔧 Configuration")
+st.sidebar.header("\ud83d\udd27 Configuration")
+
+# Popular stock suggestions
+popular_stocks = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "META", "NFLX", "NVDA", "JPM", "V"]
 
 use_live_data = st.sidebar.checkbox("Use live data from Yahoo Finance", value=True)
 
 if use_live_data:
-    symbol_input = st.sidebar.text_input("Enter stock symbols (comma-separated)", value="AAPL, MSFT")
+    symbol_input = st.sidebar.text_input(
+        "Enter stock symbols (comma-separated)", 
+        value=", ".join(popular_stocks),
+        help="Start with a few known stocks (e.g., AAPL, GOOGL)"
+    )
     if symbol_input:
-        symbols = [s.strip().upper() for s in symbol_input.split(",")]
+        symbols = [s.strip().upper() for s in symbol_input.split(",") if s.strip()]
         df_list = []
         for sym in symbols:
             ticker = yf.Ticker(sym)
@@ -59,32 +63,27 @@ else:
         st.stop()
 
 # Clean up date columns
-
 df['Date'] = pd.to_datetime(df['Date'])
 df['Date'] = df['Date'].dt.tz_localize(None)
 df.sort_values(['Index','Date'], inplace=True)
 
-# Multiselect for symbols
+# Multiselect for symbols with no default selected
 if df['Index'].nunique() > 1:
-    all_symbols = df['Index'].unique()
-    selected_symbols = st.sidebar.multiselect("Select stocks to compare:", options=all_symbols, default=list(all_symbols[:2]))
+    all_symbols = sorted(df['Index'].unique())
+    st.subheader("\ud83d\udcc8 Select Stocks to Compare")
+    selected_symbols = st.multiselect(
+        "Start typing stock symbols to search and select:",
+        options=all_symbols,
+        default=[],
+        help="Type to get stock suggestions",
+        placeholder="Select your stocks"
+    )
     if not selected_symbols:
         st.warning("Please select at least one symbol.")
         st.stop()
     df = df[df['Index'].isin(selected_symbols)]
 else:
     selected_symbols = df['Index'].unique()
-
-earnings_data = {}
-
-for sym in selected_symbols:
-    ticker = yf.Ticker(sym)
-    earnings_df = ticker.earnings
-    if earnings_df is not None and not earnings_df.empty:
-        earnings_data[sym] = earnings_df.reset_index()
-    else:
-        earnings_data[sym] = None  
-
 
 # Dropdown for detailed charts
 selected_detail_symbol = st.sidebar.selectbox("Select one stock for detailed charts:", options=selected_symbols)
@@ -102,7 +101,6 @@ if df.empty:
     st.stop()
 
 # Add feature engineering
-
 def add_features(group):
     group = group.sort_values('Date').copy()
     group['Returns'] = group['Close'].pct_change()
@@ -119,10 +117,20 @@ def add_features(group):
     group['RSI'] = 100 - (100 / (1 + rs))
     group['Volume_Change_%'] = group['Volume'].pct_change() * 100
     group['MA_Crossover'] = np.where(group['MA20'] > group['MA50'], 'Bullish', 'Bearish')
-    group['Volatility_30d'] = group['Returns'].rolling(window=30).std() * np.sqrt(252) 
+    group['Volatility_30d'] = group['Returns'].rolling(window=30).std() * np.sqrt(252)
     return group
 
 df = df.groupby('Index').apply(add_features).reset_index(drop=True)
+
+# Earnings data placeholder
+earnings_data = {}
+for sym in selected_symbols:
+    ticker = yf.Ticker(sym)
+    earnings_df = ticker.earnings
+    if earnings_df is not None and not earnings_df.empty:
+        earnings_data[sym] = earnings_df.reset_index()
+    else:
+        earnings_data[sym] = None
 
 # KPI Section
 st.markdown("""---
@@ -154,7 +162,6 @@ for sym in selected_symbols:
     fig_vol.add_trace(go.Scatter(x=sym_df['Date'], y=sym_df['Volatility_30d'], mode='lines', name=sym))
 fig_vol.update_layout(title="30-Day Annualized Volatility", xaxis_title="Date", yaxis_title="Volatility", template="plotly_white")
 st.plotly_chart(fig_vol, use_container_width=True)
-
 
 # Volume
 st.markdown("""---
