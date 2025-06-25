@@ -30,7 +30,6 @@ if use_live_data:
     symbol_input = st.sidebar.text_input(
         "Enter stock symbols (comma-separated)", 
         value="",
-        help="Start with a few known stocks (e.g., AAPL, GOOGL)"
     )
     if symbol_input:
         symbols = [s.strip().upper() for s in symbol_input.split(",") if s.strip()]
