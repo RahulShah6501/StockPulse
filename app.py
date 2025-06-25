@@ -21,18 +21,22 @@ Use this interactive dashboard to analyze, compare, and forecast stock market tr
 
 st.sidebar.header("🔧 Configuration")
 
-# Popular stock suggestions
-# Removed popular_stocks list
-
 use_live_data = st.sidebar.checkbox("Use live data from Yahoo Finance", value=True)
 
 if use_live_data:
-    symbol_input = st.sidebar.text_input(
-        "Enter stock symbols (comma-separated)", 
+    symbol_input_main = st.text_input(
+        "Enter stock symbols (comma-separated)",
         value="",
+        help="Enter any global stock symbol (e.g., AAPL, LLY, NSRGY, TSM)"
     )
-    if symbol_input:
-        symbols = [s.strip().upper() for s in symbol_input.split(",") if s.strip()]
+    symbol_input_sidebar = st.sidebar.text_input(
+        "Optional: Enter stock symbols here (used only if main input is empty)",
+        value=""
+    )
+    input_value = symbol_input_main if symbol_input_main else symbol_input_sidebar
+
+    if input_value:
+        symbols = [s.strip().upper() for s in input_value.split(",") if s.strip()]
         df_list = []
         for sym in symbols:
             ticker = yf.Ticker(sym)
@@ -81,11 +85,11 @@ if df['Index'].nunique() > 1:
         st.warning("Please select at least one symbol.")
         st.stop()
     df = df[df['Index'].isin(selected_symbols)]
+    # Update the sidebar dropdown to only show selected stocks
+    selected_detail_symbol = st.sidebar.selectbox("Select one stock for detailed charts:", options=selected_symbols)
 else:
     selected_symbols = df['Index'].unique()
-
-# Dropdown for detailed charts
-selected_detail_symbol = st.sidebar.selectbox("Select one stock for detailed charts:", options=selected_symbols)
+    selected_detail_symbol = st.sidebar.selectbox("Select one stock for detailed charts:", options=selected_symbols)
 
 # Date range filter
 min_date, max_date = df['Date'].min(), df['Date'].max()
@@ -130,7 +134,7 @@ for sym in selected_symbols:
         earnings_data[sym] = earnings_df.reset_index()
     else:
         earnings_data[sym] = None
-
+        
 # KPI Section
 st.markdown("""---
 ### 📌 Key Metrics Overview
