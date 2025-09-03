@@ -238,11 +238,22 @@ if api_key and use_live_data:
 
 # Prophet forecast per stock
 st.markdown("""---
-### 🔮 30-Day Price Forecast
+### 🔮 Price Forecast
 """)
 
+# --- Choose horizon ---
+forecast_horizon = st.sidebar.selectbox(
+    "Select Forecast Horizon",
+    options=[7, 15, 30, 90],
+    index=2,  # default 30
+    help="Number of future days to predict"
+)
+
+# --- Option to show full table ---
+show_table = st.sidebar.checkbox("Show full forecast table", value=False)
+
 @st.cache_data
-def simple_forecast(df_xy, periods=30):
+def simple_forecast(df_xy, periods):
     m = Prophet(growth='flat', yearly_seasonality=True, weekly_seasonality=True)
     m.fit(df_xy)
     future = m.make_future_dataframe(periods=periods)
@@ -252,21 +263,29 @@ def simple_forecast(df_xy, periods=30):
 for sym in selected_symbols:
     base = df[df['Index'] == sym].copy()
     price_col = 'Adj Close' if 'Adj Close' in base.columns else 'Close'
-    sub = base[['Date', price_col]].dropna().rename(columns={'Date': 'ds', price_col: 'y'})
+
+    # Start from 2025-01-01 by default (but still respects user date filters)
+    sub = base[base['Date'] >= pd.to_datetime("2025-01-01")][['Date', price_col]] \
+        .dropna().rename(columns={'Date': 'ds', price_col: 'y'})
+
     if sub.empty or len(sub) < 50:
         st.info(f"Not enough data to forecast {sym}.")
         continue
 
     # Fit & predict
-    forecast = simple_forecast(sub)
-    # Back-transform (we didn’t log so this is price already)
-    fc_future = forecast[['ds','yhat','yhat_lower','yhat_upper']].iloc[-30:]
+    forecast = simple_forecast(sub, forecast_horizon)
+    fc_future = forecast[['ds','yhat','yhat_lower','yhat_upper']].iloc[-forecast_horizon:]
+
     last_actual = sub['y'].iloc[-1]
     next_day_pred = fc_future['yhat'].iloc[0]
 
     st.subheader(f"📌 {sym}")
-    st.metric("Latest Price", f"${last_actual:.2f}")
-    st.metric("Predicted Next-Day Price", f"${next_day_pred:.2f}")
+
+    # vertical layout for metrics
+    col = st.container()
+    with col:
+        st.markdown(f"**Latest Price:**\n\n${last_actual:.2f}")
+        st.markdown(f"**Predicted Next-Day Price:**\n\n${next_day_pred:.2f}")
 
     # Chart: Actual + Forecast
     fig = go.Figure()
@@ -279,14 +298,18 @@ for sym in selected_symbols:
         y=list(fc_future['yhat_upper'])+list(fc_future['yhat_lower'][::-1]),
         fill='toself', line=dict(width=0), opacity=0.2, name='Prediction Range'
     ))
-    fig.update_layout(title=f"{sym} 30-Day Forecast",
+    fig.update_layout(title=f"{sym} {forecast_horizon}-Day Forecast",
                       xaxis_title="Date", yaxis_title="Price", template="plotly_white")
     st.plotly_chart(fig, use_container_width=True)
 
-    # Table of the next 30 days predicted prices
-    st.dataframe(
-        fc_future[['ds','yhat']].rename(columns={'ds':'Date','yhat':'Predicted Price ($)'}).round(2)
-    )
+    # Optional table
+    if show_table:
+        st.dataframe(
+            fc_future[['ds','yhat']].rename(
+                columns={'ds':'Date','yhat':'Predicted Price ($)'}
+            ).round(2),
+            use_container_width=True
+        )
 
 # Detailed charts for selected stock
 st.markdown("""---
