@@ -238,103 +238,55 @@ if api_key and use_live_data:
 
 # Prophet forecast per stock
 st.markdown("""---
-### 🔮 Price Forecast (30 Days) — Calibrated
+### 🔮 30-Day Price Forecast
 """)
 
-# Small helpers
-def pick_price_col(df_):
-    return 'Adj Close' if 'Adj Close' in df_.columns else 'Close'
-
-@st.cache_data(show_spinner=False)
-def fit_prophet_log(df_xy):
-    m = Prophet(
-        growth='flat',                # avoid runaway trends
-        weekly_seasonality=True,
-        yearly_seasonality=True,
-        changepoint_prior_scale=0.1,  # try 0.05–0.5 if under/overfitting
-        seasonality_mode='additive'
-    )
+@st.cache_data
+def simple_forecast(df_xy, periods=30):
+    m = Prophet(growth='flat', yearly_seasonality=True, weekly_seasonality=True)
     m.fit(df_xy)
-    return m
-
-def add_business_days_index(df_):
-    # Prophet prefers regular spacing; reindex to business days and ffill
-    bidx = pd.date_range(df_['ds'].min(), df_['ds'].max(), freq='B')
-    df2 = df_.set_index('ds').reindex(bidx).ffill().reset_index()
-    df2 = df2.rename(columns={'index': 'ds'})
-    return df2
+    future = m.make_future_dataframe(periods=periods)
+    forecast = m.predict(future)
+    return forecast
 
 for sym in selected_symbols:
     base = df[df['Index'] == sym].copy()
-    price_col = pick_price_col(base)
-
+    price_col = 'Adj Close' if 'Adj Close' in base.columns else 'Close'
     sub = base[['Date', price_col]].dropna().rename(columns={'Date': 'ds', price_col: 'y'})
-    if sub.empty or len(sub) < 100:
+    if sub.empty or len(sub) < 50:
         st.info(f"Not enough data to forecast {sym}.")
         continue
 
-    # Use log-price to stabilize variance
-    sub['y'] = np.log(sub['y'])
-    sub = add_business_days_index(sub)
+    # Fit & predict
+    forecast = simple_forecast(sub)
+    # Back-transform (we didn’t log so this is price already)
+    fc_future = forecast[['ds','yhat','yhat_lower','yhat_upper']].iloc[-30:]
+    last_actual = sub['y'].iloc[-1]
+    next_day_pred = fc_future['yhat'].iloc[0]
 
-    try:
-        m = fit_prophet_log(sub)
-        horizon_days = 30
-        future = m.make_future_dataframe(periods=horizon_days, freq='B')
-        fc = m.predict(future)
-        # Transform back to price
-        fc['yhat_price'] = np.exp(fc['yhat'])
-        fc['yhat_lower_price'] = np.exp(fc['yhat_lower'])
-        fc['yhat_upper_price'] = np.exp(fc['yhat_upper'])
+    st.subheader(f"📌 {sym}")
+    st.metric("Latest Price", f"${last_actual:.2f}")
+    st.metric("Predicted Next-Day Price", f"${next_day_pred:.2f}")
 
-        # Actuals aligned to forecast tail
-        actual = base[['Date', price_col]].rename(columns={'Date':'ds', price_col:'actual'}).set_index('ds')
-        merged = fc.set_index('ds')[['yhat_price','yhat_lower_price','yhat_upper_price']].join(actual, how='left')
-        tail = merged.iloc[-horizon_days:].copy()
+    # Chart: Actual + Forecast
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=sub['ds'], y=sub['y'],
+                             mode='lines', name='Actual Price'))
+    fig.add_trace(go.Scatter(x=fc_future['ds'], y=fc_future['yhat'],
+                             mode='lines', name='Forecast Price'))
+    fig.add_trace(go.Scatter(
+        x=list(fc_future['ds'])+list(fc_future['ds'][::-1]),
+        y=list(fc_future['yhat_upper'])+list(fc_future['yhat_lower'][::-1]),
+        fill='toself', line=dict(width=0), opacity=0.2, name='Prediction Range'
+    ))
+    fig.update_layout(title=f"{sym} 30-Day Forecast",
+                      xaxis_title="Date", yaxis_title="Price", template="plotly_white")
+    st.plotly_chart(fig, use_container_width=True)
 
-        # Naïve baseline: last observed price carried forward
-        last_price = merged['actual'].dropna().iloc[-1]
-        tail['naive'] = last_price
-
-        # Error metrics
-        def rmse(a, p): 
-            a, p = a.dropna(), p.loc[a.dropna().index]
-            return float(np.sqrt(((p - a) ** 2).mean())) if len(a) else np.nan
-        def mape(a, p):
-            a, p = a.dropna(), p.loc[a.dropna().index]
-            return float((np.abs((p - a) / a).mean() * 100)) if len(a) else np.nan
-
-        rmse_prophet = rmse(tail['actual'], tail['yhat_price'])
-        mape_prophet = mape(tail['actual'], tail['yhat_price'])
-        rmse_naive = rmse(tail['actual'], tail['naive'])
-        mape_naive = mape(tail['actual'], tail['naive'])
-
-        # Plot forecast vs actual
-        fig = go.Figure()
-        hist = merged[['actual']].dropna().iloc[:-horizon_days]  # history
-        fig.add_trace(go.Scatter(x=hist.index, y=hist['actual'], mode='lines', name=f'{sym} Actual (history)'))
-        futx = tail.index
-        fig.add_trace(go.Scatter(x=futx, y=tail['yhat_price'], mode='lines', name='Prophet Forecast'))
-        fig.add_trace(go.Scatter(
-            x=list(futx)+list(futx[::-1]),
-            y=list(tail['yhat_upper_price'])+list(tail['yhat_lower_price'][::-1]),
-            fill='toself', opacity=0.2, line=dict(width=0), name='95% Interval'
-        ))
-        fig.add_trace(go.Scatter(x=futx, y=tail['naive'], mode='lines', name='Naïve (last value)'))
-        fig.add_trace(go.Scatter(x=futx, y=tail['actual'], mode='lines+markers', name='Actual (future)'))
-        fig.update_layout(title=f"{sym} — 30-Day Forecast vs Actuals & Baseline",
-                          xaxis_title="Date", yaxis_title="Price", template="plotly_white")
-        st.plotly_chart(fig, use_container_width=True)
-
-        # Metrics summary
-        st.caption(
-            f"**{sym}** — Prophet MAPE: {mape_prophet:.2f}% | RMSE: {rmse_prophet:.2f} | "
-            f"Naïve MAPE: {mape_naive:.2f}% | RMSE: {rmse_naive:.2f}. "
-            f"Coverage: {(tail['actual'].between(tail['yhat_lower_price'], tail['yhat_upper_price']).mean()*100):.1f}%."
-        )
-
-    except Exception as e:
-        st.warning(f"Forecast failed for {sym}: {e}")
+    # Table of the next 30 days predicted prices
+    st.dataframe(
+        fc_future[['ds','yhat']].rename(columns={'ds':'Date','yhat':'Predicted Price ($)'}).round(2)
+    )
 
 # Detailed charts for selected stock
 st.markdown("""---
