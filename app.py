@@ -237,11 +237,12 @@ if api_key and use_live_data:
                 st.plotly_chart(fig_sent, use_container_width=True)
 
 # Prophet forecast per stock
+# --- Conservative Forecast (log-returns + reconstruction) ---
 st.markdown("""---
-### 🔮 Price Forecast
+### 🔮 Price Forecast (Conservative)
 """)
 
-# --- Choose horizon ---
+# --- Choose horizon (keeps your existing UI) ---
 forecast_horizon = st.sidebar.selectbox(
     "Select Forecast Horizon",
     options=[7, 15, 30, 90],
@@ -249,67 +250,117 @@ forecast_horizon = st.sidebar.selectbox(
     help="Number of future days to predict"
 )
 
-# --- Option to show full table ---
+# --- Option to show full table (keeps your existing UI) ---
 show_table = st.sidebar.checkbox("Show full forecast table", value=False)
 
-@st.cache_data
-def simple_forecast(df_xy, periods):
-    m = Prophet(growth='flat', yearly_seasonality=True, weekly_seasonality=True)
-    m.fit(df_xy)
-    future = m.make_future_dataframe(periods=periods)
-    forecast = m.predict(future)
-    return forecast
+# Helper: forecast returns with Prophet and reconstruct price path
+def forecast_by_returns(price_df, periods, clip_pct=0.20):
+    """
+    price_df: DataFrame with columns ['ds','y'] where y is price
+    periods: number of future business days to forecast
+    clip_pct: maximum absolute daily return (as fraction, e.g. 0.20 = 20%)
+    Returns DataFrame of future dates with predicted prices and bands.
+    """
+    # Prepare log-returns series
+    df = price_df.copy().sort_values('ds')
+    df['log_price'] = np.log(df['y'])
+    df['y_ret'] = df['log_price'].diff()        # log-return series
+    df_ret = df[['ds','y_ret']].dropna().rename(columns={'y_ret':'y'})
 
+    # Require enough history
+    if df_ret.shape[0] < 30:
+        raise ValueError("Not enough return history (need >=30 rows).")
+
+    # Fit Prophet on returns (stationary)
+    m = Prophet(
+        growth='flat',
+        weekly_seasonality=True,
+        yearly_seasonality=False,
+        daily_seasonality=False,
+        changepoint_prior_scale=0.05,
+        interval_width=0.95
+    )
+    m.fit(df_ret)
+
+    # Future dataframe (business days)
+    future = m.make_future_dataframe(periods=periods, freq='B')
+    forecast = m.predict(future)
+
+    # Keep only future rows (strictly after last observed date)
+    last_obs = df_ret['ds'].max()
+    fut = forecast[forecast['ds'] > last_obs].copy().reset_index(drop=True)
+
+    # Clip daily log-return forecasts to avoid absurd spikes
+    fut['yhat_clipped'] = fut['yhat'].clip(lower=-clip_pct, upper=clip_pct)
+    fut['yhat_lower_clipped'] = fut['yhat_lower'].clip(lower=-clip_pct, upper=clip_pct)
+    fut['yhat_upper_clipped'] = fut['yhat_upper'].clip(lower=-clip_pct, upper=clip_pct)
+
+    # Reconstruct price path from last actual price
+    last_price = float(price_df['y'].iloc[-1])
+    fut['cum_loghat'] = fut['yhat_clipped'].cumsum()
+    fut['cum_loglower'] = fut['yhat_lower_clipped'].cumsum()
+    fut['cum_logupper'] = fut['yhat_upper_clipped'].cumsum()
+
+    fut['pred_price'] = last_price * np.exp(fut['cum_loghat'])
+    fut['pred_lower'] = last_price * np.exp(fut['cum_loglower'])
+    fut['pred_upper'] = last_price * np.exp(fut['cum_logupper'])
+
+    # safety floor
+    fut['pred_price'] = fut['pred_price'].clip(lower=0.01)
+    fut['pred_lower'] = fut['pred_lower'].clip(lower=0.01)
+    fut['pred_upper'] = fut['pred_upper'].clip(lower=0.01)
+
+    return fut[['ds','pred_price','pred_lower','pred_upper','yhat_clipped','yhat_lower_clipped','yhat_upper_clipped']]
+
+# Run forecasts for each selected symbol
 for sym in selected_symbols:
     base = df[df['Index'] == sym].copy()
     price_col = 'Adj Close' if 'Adj Close' in base.columns else 'Close'
 
-    # Start from 2025-01-01 by default (but still respects user date filters)
-    sub = base[base['Date'] >= pd.to_datetime("2025-01-01")][['Date', price_col]] \
-        .dropna().rename(columns={'Date': 'ds', price_col: 'y'})
+    # Respect your earlier requirement: start from 2025-01-01 by default (but still respects top-level date filter)
+    sub_prices = base[base['Date'] >= pd.to_datetime("2025-01-01")][['Date', price_col]] \
+        .dropna().rename(columns={'Date':'ds', price_col:'y'}).reset_index(drop=True)
 
-    if sub.empty or len(sub) < 50:
-        st.info(f"Not enough data to forecast {sym}.")
+    if sub_prices.empty or len(sub_prices) < 60:
+        st.info(f"Not enough data to forecast {sym}. Need ~60 days after 2025-01-01 or adjust your start date.")
         continue
 
-    # Fit & predict
-    forecast = simple_forecast(sub, forecast_horizon)
-    fc_future = forecast[['ds','yhat','yhat_lower','yhat_upper']].iloc[-forecast_horizon:]
+    try:
+        fut = forecast_by_returns(sub_prices, periods=forecast_horizon, clip_pct=0.20)
+    except Exception as e:
+        st.warning(f"Forecast skipped for {sym}: {e}")
+        continue
 
-    last_actual = sub['y'].iloc[-1]
-    next_day_pred = fc_future['yhat'].iloc[0]
-
+    # Present results (vertical metrics)
     st.subheader(f"📌 {sym}")
+    last_actual = sub_prices['y'].iloc[-1]
+    next_day_pred = float(fut['pred_price'].iloc[0])
+    end_horizon_pred = float(fut['pred_price'].iloc[-1])
 
-    # vertical layout for metrics
-    col = st.container()
-    with col:
-        st.markdown(f"**Latest Price:**\n\n${last_actual:.2f}")
-        st.markdown(f"**Predicted Next-Day Price:**\n\n${next_day_pred:.2f}")
+    # Vertical display (compact, non-technical)
+    st.markdown(f"**Latest Price:**  \n${last_actual:,.2f}")
+    st.markdown(f"**Predicted Next-Day Price:**  \n${next_day_pred:,.2f}")
+    st.markdown(f"**Predicted Price after {forecast_horizon} days:**  \n${end_horizon_pred:,.2f}")
 
-    # Chart: Actual + Forecast
+    # Chart: actual prices + predicted price path with band
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=sub['ds'], y=sub['y'],
+    fig.add_trace(go.Scatter(x=sub_prices['ds'], y=sub_prices['y'],
                              mode='lines', name='Actual Price'))
-    fig.add_trace(go.Scatter(x=fc_future['ds'], y=fc_future['yhat'],
-                             mode='lines', name='Forecast Price'))
+    fig.add_trace(go.Scatter(x=fut['ds'], y=fut['pred_price'],
+                             mode='lines', name='Predicted Price'))
     fig.add_trace(go.Scatter(
-        x=list(fc_future['ds'])+list(fc_future['ds'][::-1]),
-        y=list(fc_future['yhat_upper'])+list(fc_future['yhat_lower'][::-1]),
-        fill='toself', line=dict(width=0), opacity=0.2, name='Prediction Range'
+        x=list(fut['ds']) + list(fut['ds'][::-1]),
+        y=list(fut['pred_upper']) + list(fut['pred_lower'][::-1]),
+        fill='toself', line=dict(width=0), opacity=0.2, name='Prediction Range (95%)'
     ))
-    fig.update_layout(title=f"{sym} {forecast_horizon}-Day Forecast",
+    fig.update_layout(title=f"{sym} {forecast_horizon}-Day Forecast (returns-based)",
                       xaxis_title="Date", yaxis_title="Price", template="plotly_white")
     st.plotly_chart(fig, use_container_width=True)
 
-    # Optional table
+    # Optional compact table (only the future horizon)
     if show_table:
-        st.dataframe(
-            fc_future[['ds','yhat']].rename(
-                columns={'ds':'Date','yhat':'Predicted Price ($)'}
-            ).round(2),
-            use_container_width=True
-        )
+        table = fut[['ds','pred_price']].rename(columns={'ds':'Date','pred_price':'Predicted Price ($)'}).round(2)
+        st.dataframe(table, use_container_width=True)
 
 # Detailed charts for selected stock
 st.markdown("""---
